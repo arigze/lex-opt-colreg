@@ -74,7 +74,7 @@ class WaypointRoute:
     def is_finished(self) -> bool:
         return self.idx >= len(self.waypoints_xy) - 1
 
-class StaticControlSeqGenrator:
+class StaticControlSeqGenerator:
     """Generates a set of static trajectories based max yaw rate, horizon and number of trajectories."""
     
     def __init__(self, max_yaw_rate: float=np.radians(20), horizon: int=20, num_trajectories: int=45, decay_factor: float=0.95):
@@ -125,9 +125,11 @@ class SimplifiedMPCController(Controller):
             waypoints_xy=np.asarray(waypoints_xy, dtype=float),
             transition_radius=self.cfg.collision_radius,
         )
-        self.control_sequences = StaticControlSeqGenrator(self.cfg.max_yaw_rate, self.cfg.horizon, self.cfg.n_candidates).control_sequences
+        self.control_sequences = StaticControlSeqGenerator(self.cfg.max_yaw_rate, self.cfg.horizon, self.cfg.n_candidates).control_sequences
         self.u_candidates = self.control_sequences[:, 0]
         self.vis_scale = vis_scale  # for trajectory visualization
+        self.active_encounters = {}  # {target_id: (encounter_type, timestamp)}
+
     def compute_control(
         self,
         t: float,
@@ -183,15 +185,30 @@ class SimplifiedMPCController(Controller):
             return ((float(u_candidates[idx]), idx), (feasible_mask, own_trajs_vis))
 
         # 6) Select the best feasible candidate (with COLREG awareness)
-        idx = self._select_best(
-            own,
-            (wp_x, wp_y),
-            theta_target,
-            u_candidates,
-            own_trajs,
-            feasible_mask,
-            dyn_states=dyn_states,  
-        )
+        # idx = self._select_best(
+        #     own,
+        #     (wp_x, wp_y),
+        #     theta_target,
+        #     u_candidates,
+        #     own_trajs,
+        #     feasible_mask,
+        #     dyn_states=dyn_states,  
+        # )
+
+        # 7) Calculate lambda-ladder
+        collisions = self._is_colliding(feasible_mask)
+        print("Collisions:", collisions)
+        colreg_violations = self._respects_colreg_rules(own_ship, other_vessels, u_candidates)
+        print("COLREG Violations:", colreg_violations)
+        path_following_scores = self._path_following_scores((wp_x, wp_y), own_trajs)
+        normalized_path_scores = self._normalize_scores(path_following_scores)
+        print("Path Following Scores:", normalized_path_scores)
+        lambda_ladder = self._lambda_ladder(collisions, colreg_violations, normalized_path_scores)
+        print("Lambda Ladder:", lambda_ladder)
+        idx = np.argmin(lambda_ladder)
+        print("Selected index:", idx)
+        u_idx = u_candidates[idx]
+        print(f"Selected control: {u_idx} (yaw rate in rad/s)")
 
         return (float(u_candidates[idx]), idx), (feasible_mask, own_trajs_vis)
 
@@ -249,10 +266,6 @@ class SimplifiedMPCController(Controller):
                 py += v * math.sin(psi) * dt
                 own_trajs[m, h, 0] = px
                 own_trajs[m, h, 1] = py
-                
-                if not env.is_navigable(px, py):
-                    feasible[m] = False
-                    break
 
                 # --- static obstacle check (land) ---
                 if not env.is_navigable(px, py):
@@ -362,10 +375,215 @@ class SimplifiedMPCController(Controller):
 
             return best_idx
 
+
+    # ------------------------------------------------------------------
+    # Reward/cost functions
+    # ------------------------------------------------------------------
+
+    def _is_colliding(self, feasible_mask) -> np.ndarray:
+        '''
+        Check if there is a collision with land or other vessel in the trajectory.
+        Returns 1 if colliding (infeasible), 0 if not colliding (feasible).
+        '''
+        return (1 - feasible_mask).astype(int)
+
+    def _respects_colreg_rules(self, own_ship: Vessel, other_vessels: List[Vessel], u_candidates: np.ndarray) -> np.ndarray:
+        '''
+        Check if the colreg rules are respected by the trajectory.
+        Only considers vessels within COLREG radius.
+        Returns 1 if COLREG violation, 0 if respected.
+        '''
+        M = u_candidates.shape[0]
+        violations = np.ones(M, dtype=int)
+
+        for m in range(M):
+            has_nearby_vessels = False
+            for target in other_vessels:
+                distance = math.hypot(target.state.x - own_ship.state.x, target.state.y - own_ship.state.y)
+                print(f"Distance {distance:.2f} m")
+                if distance <= self.cfg.colreg_radius:
+                    has_nearby_vessels = True
+
+                    # Relative bearing
+                    relative_bearing = self._relative_bearing(own_ship.state, target.state)
+
+                    # Print to debug
+                    encounter = self._classify_encounter(own_ship, target)
+                    print(f"Encounter type: {encounter}")
+
+                    violations[m] = 0 if self._compute_control(encounter, relative_bearing, u_candidates[m]) else 1
+
+                    # TODO : Do we need this patch?
+                    # Special case: crossing-starboard allows the smallest candidate to be compliant in case target is too far starboard
+                    # This allows to turn starboard (right) even if the relative_bearing is too small
+                    if encounter == "crossing-starboard" and m == 0:
+                        violations[m] = 0  # No violation for first candidate in crossing-starboard
+
+            if not has_nearby_vessels:
+                violations[m] = 0  # No violations if no vessels in COLREG radius
+        
+        return violations
+
+    def _path_following_scores(self, waypoint_xy: Tuple[float, float], own_trajs: np.ndarray) -> np.ndarray:
+        """
+        Calculate path following scores as distance from trajectory endpoints to waypoint.
+        Lower scores indicate better path following.
+        """
+        wp_x, wp_y = waypoint_xy
+        scores = np.zeros(own_trajs.shape[0], dtype=float)
+        
+        for m in range(own_trajs.shape[0]):
+            end_x, end_y = own_trajs[m, -1]
+            scores[m] = math.hypot(end_x - wp_x, end_y - wp_y)
+        
+        return scores
+
+    def _lambda_ladder(self, collisions, colreg_violations, path_following_scores) -> np.ndarray:
+        '''
+        Compute lambda-ladder loss function.
+        Uses a hierarchical priority: collisions > COLREG violations > path following.
+        '''
+        # Parameters for the lambda-ladder (can be tuned)
+        c = 1.0  # Scaling factor
+        delta = 0.0  # Priority gap
+        
+        # Lambda-ladder formulation: log-sum-exp of prioritized costs
+        level0 = collisions  # Highest priority: avoid collisions
+        level1 = colreg_violations  # Medium priority: respect COLREG
+        level2 = path_following_scores  # Lowest priority: follow path
+        
+        costs = np.array([level0, level1, level2])
+        priorities = np.array([0, delta, 2 * delta])  # Collisions (0), COLREG (delta), Path (2*delta)
+        
+        # For each trajectory, compute the lambda-ladder value
+        lambda_values = np.zeros(collisions.shape[0])
+        for m in range(collisions.shape[0]):
+            exponents = -c * (priorities + costs[:, m])
+            lambda_values[m] = -np.log(np.sum(np.exp(exponents))) / c
+        
+        return lambda_values
+
+    def _normalize_scores(self, scores: np.ndarray) -> np.ndarray:
+        """Normalize scores to [0, 1] range for fair combination."""
+        if np.all(scores == scores[0]):
+            return np.zeros_like(scores)  # Avoid division by zero if all values are identical
+        min_score = np.min(scores)
+        max_score = np.max(scores)
+        return (scores - min_score) / (max_score - min_score)
+
+    def _classify_encounter(self, own: Vessel, target: Vessel) -> str:
+        """Classify encounter type based on stored active encounters."""
+        # Distance
+        distance = self._distance(own, target)
+
+        # Check if we already have an active encounter type for this target
+        target_id = id(target)
+        if target_id in self.active_encounters:
+            # Check if still within COLREG zone
+            if distance <= self.cfg.colreg_radius:
+                return self.active_encounters[target_id]  # Use stored encounter type
+            else:
+                del self.active_encounters[target_id]  # Clear when outside zone
+
+        # First detection - classify and store
+        encounter = self._classify_new_encounter(own, target)
+        self.active_encounters[target_id] = encounter
+        return encounter
+
+    def _classify_new_encounter(self, own: Vessel, target: Vessel) -> str:
+        """Classify encounter type based on relative bearing and motion."""
+        # Relative bearing
+        relative_bearing = self._relative_bearing(own, target)
+
+        # Heading difference
+        heading_diff = self._heading_difference(own, target)
+
+        # Classify encounter type based on relative bearing and heading difference
+        if abs(relative_bearing) < math.pi/12 and abs(heading_diff) > 11*math.pi/12:
+            return "head-on" # Head-on encounter
+        elif abs(relative_bearing) < math.pi/6 and abs(heading_diff) < math.pi/6:
+            return "overtaking" # Overtaking from behind
+        elif abs(relative_bearing) > 5*math.pi/6 and abs(heading_diff) < math.pi/6:
+            return "overtaken" # Being overtaken
+        elif -5*math.pi/8 < relative_bearing < 0:
+            return "crossing-starboard" # Crossing from starboard
+        elif 0 < relative_bearing < 5*math.pi/8:
+            return "crossing-port" # Crossing from port
+        else:
+            return "none" # No significant encounter (e.g., far away or perpendicular paths)
+
+    def _compute_control(self, encounter_type: str, relative_bearing: float, u_candidate: np.ndarray) -> None:
+        """Determine if the candidate control input respects COLREG rules based on encounter type and relative bearing."""
+        # Check if candidate control respects COLREG for this target
+        if encounter_type in ["head-on", "crossing-starboard"]:
+            if u_candidate < relative_bearing:  # Must turn to starboard (right)
+                return True  # No violation
+        elif encounter_type == "overtaking":
+            if abs(u_candidate) > relative_bearing:  # Must turn starboard (right) or port (left), both are valid
+                return True  # No violation
+        elif encounter_type in ["crossing-port", "overtaken", "none"]:
+            return True  # No violation
+
     # ------------------------------------------------------------------
     # Small utilities
     # ------------------------------------------------------------------
 
     @staticmethod
     def _wrap_angle(a: float) -> float:
+        # Wrap angle to [-pi, pi]
         return (a + math.pi) % (2 * math.pi) - math.pi
+
+    def _relative_bearing(self, own, target) -> float:
+        """Calculate relative bearing from own ship to target."""
+        if isinstance(own, Vessel):
+            own = own.state
+        if isinstance(target, Vessel):
+            target = target.state
+
+        # Own ship
+        own_x = own.x
+        own_y = own.y
+        own_psi = own.psi
+
+        # Target ship
+        target_x = target.x
+        target_y = target.y
+
+        # Relative bearing
+        dx = target_x - own_x
+        dy = target_y - own_y
+        relative_bearing = math.atan2(dy, dx) - own_psi
+        return self._wrap_angle(relative_bearing)
+
+    def _heading_difference(self, own, target) -> float:
+        """Calculate heading difference between own ship and target."""
+        if isinstance(own, Vessel):
+            own = own.state
+        if isinstance(target, Vessel):
+            target = target.state
+
+        # Own ship
+        own_psi = own.psi
+
+        # Target ship
+        target_psi = target.psi
+
+        # Heading difference
+        return self._wrap_angle(own_psi - target_psi)
+
+    def _distance(self, own, target) -> float:
+        """Calculate distance between own ship and target."""
+        if isinstance(own, Vessel):
+            own = own.state
+        if isinstance(target, Vessel):
+            target = target.state
+
+        # Own ship
+        own_x = own.x
+        own_y = own.y
+
+        # Target ship
+        target_x = target.x
+        target_y = target.y
+
+        return math.hypot(target_x - own_x, target_y - own_y)

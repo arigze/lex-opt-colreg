@@ -191,6 +191,7 @@ class COLREGLogic:
 
         Returns +1 for port (left) turn, -1 for starboard (right) turn.
         """
+        # TODO : This function always returns -1, something seems wrong
         dx = own_ship.state.x - target.state.x
         dy = own_ship.state.y - target.state.y
         d_magnitude = np.hypot(dx, dy)

@@ -6,7 +6,7 @@ import math
 import numpy as np
 import pytest
 
-from mpc_ship_nav.mpc.mpc_controller import StaticControlSeqGenrator
+from mpc_ship_nav.mpc.mpc_controller import StaticControlSeqGenerator
 
 
 class TestStaticControlSeqGenerator:
@@ -14,7 +14,7 @@ class TestStaticControlSeqGenerator:
 
     def test_generate_controls_shape(self):
         """Test that control sequences have correct shape."""
-        generator = StaticControlSeqGenrator(
+        generator = StaticControlSeqGenerator(
             max_yaw_rate=math.radians(20.0),
             horizon=16,
             num_trajectories=45,
@@ -27,7 +27,7 @@ class TestStaticControlSeqGenerator:
     def test_generate_controls_range(self):
         """Test that initial yaw rates span the correct range."""
         max_yaw_rate = math.radians(20.0)
-        generator = StaticControlSeqGenrator(
+        generator = StaticControlSeqGenerator(
             max_yaw_rate=max_yaw_rate,
             horizon=16,
             num_trajectories=45,
@@ -43,7 +43,7 @@ class TestStaticControlSeqGenerator:
     def test_decay_factor(self):
         """Test that yaw rate decays by decay_factor each step."""
         decay_factor = 0.95
-        generator = StaticControlSeqGenrator(
+        generator = StaticControlSeqGenerator(
             max_yaw_rate=math.radians(20.0),
             horizon=16,
             num_trajectories=5,
@@ -63,7 +63,7 @@ class TestStaticControlSeqGenerator:
 
     def test_zero_decay_factor(self):
         """Test behavior with zero decay factor."""
-        generator = StaticControlSeqGenrator(
+        generator = StaticControlSeqGenerator(
             max_yaw_rate=math.radians(20.0),
             horizon=5,
             num_trajectories=3,
@@ -78,7 +78,7 @@ class TestStaticControlSeqGenerator:
 
     def test_single_trajectory(self):
         """Test with single trajectory."""
-        generator = StaticControlSeqGenrator(
+        generator = StaticControlSeqGenerator(
             max_yaw_rate=math.radians(20.0),
             horizon=10,
             num_trajectories=1,
@@ -91,7 +91,7 @@ class TestStaticControlSeqGenerator:
 
     def test_horizon_one(self):
         """Test with horizon of 1."""
-        generator = StaticControlSeqGenrator(
+        generator = StaticControlSeqGenerator(
             max_yaw_rate=math.radians(20.0),
             horizon=1,
             num_trajectories=5,
