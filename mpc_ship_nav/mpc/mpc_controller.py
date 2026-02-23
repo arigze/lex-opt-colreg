@@ -184,31 +184,13 @@ class SimplifiedMPCController(Controller):
             idx = np.argmin(np.abs(u_candidates))
             return ((float(u_candidates[idx]), idx), (feasible_mask, own_trajs_vis))
 
-        # 6) Select the best feasible candidate (with COLREG awareness)
-        # idx = self._select_best(
-        #     own,
-        #     (wp_x, wp_y),
-        #     theta_target,
-        #     u_candidates,
-        #     own_trajs,
-        #     feasible_mask,
-        #     dyn_states=dyn_states,  
-        # )
-
-        # 7) Calculate lambda-ladder
+        # 6) Calculate lambda-ladder
         collisions = self._is_colliding(feasible_mask)
-        print("Collisions:", collisions)
         colreg_violations = self._respects_colreg_rules(own_ship, other_vessels, u_candidates)
-        print("COLREG Violations:", colreg_violations)
         path_following_scores = self._path_following_scores((wp_x, wp_y), own_trajs)
         normalized_path_scores = self._normalize_scores(path_following_scores)
-        print("Path Following Scores:", normalized_path_scores)
         lambda_ladder = self._lambda_ladder(collisions, colreg_violations, normalized_path_scores)
-        print("Lambda Ladder:", lambda_ladder)
         idx = np.argmin(lambda_ladder)
-        print("Selected index:", idx)
-        u_idx = u_candidates[idx]
-        print(f"Selected control: {u_idx} (yaw rate in rad/s)")
 
         return (float(u_candidates[idx]), idx), (feasible_mask, own_trajs_vis)
 
@@ -407,10 +389,7 @@ class SimplifiedMPCController(Controller):
                     # Relative bearing
                     relative_bearing = self._relative_bearing(own_ship.state, target.state)
 
-                    # Print to debug
-                    encounter = self._classify_encounter(own_ship, target)
-                    print(f"Encounter type: {encounter}")
-
+                    # Check violation
                     violations[m] = 0 if self._compute_control(encounter, relative_bearing, u_candidates[m]) else 1
 
                     # TODO : Do we need this patch?
