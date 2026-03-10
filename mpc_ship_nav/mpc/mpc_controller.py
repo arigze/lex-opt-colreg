@@ -498,6 +498,7 @@ class SimplifiedMPCController(Controller):
             if u_candidate < relative_bearing:  # Must turn to starboard (right)
                 return True  # No violation
         elif encounter_type == "overtaking":
+            # TODO
             if abs(u_candidate) > relative_bearing:  # Must turn starboard (right) or port (left), both are valid
                 return True  # No violation
         elif encounter_type in ["crossing-port", "overtaken", "none"]:

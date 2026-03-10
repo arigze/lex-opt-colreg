@@ -54,6 +54,28 @@ def build_open_water_env(lat_center: float = 43.5, lon_center: float = 16.4) -> 
     env.set_origin(lat_center, lon_center)
     return env
 
+def build_coastal_env() -> ChartEnvironment:
+    """Build a coastal environment for testing."""
+    cfg = RegionConfig(
+        lat_min=lat_center - 0.25,
+        lat_max=lat_center + 0.25,
+        lon_min=lon_center - 0.35,
+        lon_max=lon_center + 0.35,
+        grid_resolution=300.0,
+        coastal_buffer=0.0,
+        coastline_file=None,
+    )
+    x_c, y_c = env.to_local(lat_center, lon_center)
+    size = 10_000.0  # 10 km half-size
+    env = ChartEnvironment(cfg)
+    env.land_geometry = Polygon([
+                (x_c - size, y_c - size),
+                (x_c + size, y_c - size),
+                (x_c + size, y_c + size),
+                (x_c - size, y_c + size),
+            ])  # Coastal land 
+    env.set_origin(lat_center, lon_center)
+    return env
 
 def check_collisions(log, threshold: float = D_COLLISION) -> Tuple[bool, Optional[float], float]:
     """
