@@ -67,9 +67,9 @@ def build_coastal_env() -> ChartEnvironment:
         coastal_buffer=0.0,
         coastline_file=None,
     )
+    env = ChartEnvironment(cfg)
     x_c, y_c = env.to_local(lat_center, lon_center)
     size = 10_000.0  # 10 km half-size
-    env = ChartEnvironment(cfg)
     env.land_geometry = Polygon([
                 (x_c - size, y_c - size),
                 (x_c + size, y_c - size),
