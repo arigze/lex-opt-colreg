@@ -10,7 +10,7 @@ from typing import List, Tuple, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, MultiPolygon
 
 from mpc_ship_nav.charts.config import RegionConfig
 from mpc_ship_nav.charts.environment import ChartEnvironment
