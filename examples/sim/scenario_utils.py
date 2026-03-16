@@ -70,12 +70,12 @@ def build_coastal_env() -> ChartEnvironment:
     env = ChartEnvironment(cfg)
     x_c, y_c = env.to_local(lat_center, lon_center)
     size = 10_000.0  # 10 km half-size
-    env.land_geometry = Polygon([
+    env.land_geometry = MultiPolygon([Polygon([
                 (x_c - size, y_c - size),
                 (x_c + size, y_c - size),
                 (x_c + size, y_c + size),
                 (x_c - size, y_c + size),
-            ])  # Coastal land 
+            ])])  # Coastal land 
     env.set_origin(lat_center, lon_center)
     return env
 
