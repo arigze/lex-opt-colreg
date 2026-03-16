@@ -382,12 +382,14 @@ class SimplifiedMPCController(Controller):
             has_nearby_vessels = False
             for target in other_vessels:
                 distance = math.hypot(target.state.x - own_ship.state.x, target.state.y - own_ship.state.y)
-                print(f"Distance {distance:.2f} m")
                 if distance <= self.cfg.colreg_radius:
                     has_nearby_vessels = True
 
                     # Relative bearing
                     relative_bearing = self._relative_bearing(own_ship.state, target.state)
+
+                    # Encouter
+                    encounter = self._classify_encounter(own_ship, target)
 
                     # Check violation
                     violations[m] = 0 if self._compute_control(encounter, relative_bearing, u_candidates[m]) else 1
