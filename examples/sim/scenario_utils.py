@@ -56,6 +56,8 @@ def build_open_water_env(lat_center: float = 43.5, lon_center: float = 16.4) -> 
 
 def build_coastal_env() -> ChartEnvironment:
     """Build a coastal environment for testing."""
+    lat_center = 43.5
+    lon_center = 16.4
     cfg = RegionConfig(
         lat_min=lat_center - 0.25,
         lat_max=lat_center + 0.25,
