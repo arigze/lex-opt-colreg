@@ -186,11 +186,16 @@ class SimplifiedMPCController(Controller):
 
         # 6) Calculate lambda-ladder
         collisions = self._is_colliding(feasible_mask)
+        print("Collis:", collisions)
         colreg_violations = self._respects_colreg_rules(own_ship, other_vessels, u_candidates)
+        print("COLREG:", colreg_violations)
         path_following_scores = self._path_following_scores((wp_x, wp_y), own_trajs)
         normalized_path_scores = self._normalize_scores(path_following_scores)
+        print("Path scores:", normalized_path_scores)
         lambda_ladder = self._lambda_ladder(collisions, colreg_violations, normalized_path_scores)
+        print("Lambda-ladder values:", lambda_ladder)
         idx = np.argmin(lambda_ladder)
+        print(f"Selected trajectory index: {idx} and value: {lambda_ladder[idx]}")
 
         return (float(u_candidates[idx]), idx), (feasible_mask, own_trajs_vis)
 
@@ -425,8 +430,8 @@ class SimplifiedMPCController(Controller):
         Uses a hierarchical priority: collisions > COLREG violations > path following.
         '''
         # Parameters for the lambda-ladder (can be tuned)
-        c = 1.0  # Scaling factor
-        delta = 0.0  # Priority gap
+        c = 1000.0  # Scaling factor
+        delta = 0.01  # Priority gap
         
         # Lambda-ladder formulation: log-sum-exp of prioritized costs
         level0 = collisions  # Highest priority: avoid collisions
