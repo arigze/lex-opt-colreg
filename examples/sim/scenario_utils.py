@@ -64,17 +64,22 @@ def build_coastal_env() -> ChartEnvironment:
         lon_min=lon_center - 0.35,
         lon_max=lon_center + 0.35,
         grid_resolution=300.0,
-        coastal_buffer=0.0,
+        coastal_buffer=20.0,
         coastline_file=None,
     )
     env = ChartEnvironment(cfg)
     x_c, y_c = env.to_local(lat_center, lon_center)
-    size = 10_000.0  # 10 km half-size
+    x_size = 15000.0  # 15000 km half-size
+    y_size = 1000.0  # 1 km half-size
+    x_offset = 15000.0
+    x_c += x_offset
+    y_offset = 1020.0
+    y_c -= y_offset
     env.land_geometry = MultiPolygon([Polygon([
-                (x_c - size, y_c - size),
-                (x_c + size, y_c - size),
-                (x_c + size, y_c + size),
-                (x_c - size, y_c + size),
+                (x_c - x_size, y_c - y_size),
+                (x_c + x_size, y_c - y_size),
+                (x_c + x_size, y_c + y_size),
+                (x_c - x_size, y_c + y_size),
             ])])  # Coastal land 
     env.set_origin(lat_center, lon_center)
     return env
