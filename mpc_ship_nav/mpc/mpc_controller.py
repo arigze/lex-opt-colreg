@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import torch
 from dataclasses import dataclass
 from typing import List, Tuple
 
@@ -430,8 +431,8 @@ class SimplifiedMPCController(Controller):
         Uses a hierarchical priority: collisions > COLREG violations > path following.
         '''
         # Parameters for the lambda-ladder (can be tuned)
-        c = 1000.0  # Scaling factor
-        delta = 0.01  # Priority gap
+        c = 10.0  # Scaling factor
+        delta = 0.1  # Priority gap
         
         # Lambda-ladder formulation: log-sum-exp of prioritized costs
         level0 = collisions  # Highest priority: avoid collisions
@@ -445,7 +446,7 @@ class SimplifiedMPCController(Controller):
         lambda_values = np.zeros(collisions.shape[0])
         for m in range(collisions.shape[0]):
             exponents = -c * (priorities + costs[:, m])
-            lambda_values[m] = -np.log(np.sum(np.exp(exponents))) / c
+            lambda_values[m] = -torch.logsumexp(torch.tensor(exponents), dim=0) / c
         
         return lambda_values
 
@@ -505,7 +506,8 @@ class SimplifiedMPCController(Controller):
             if u_candidate < relative_bearing:  # Must turn to starboard (right)
                 return True  # No violation
         elif encounter_type == "overtaking":
-            # TODO
+            # TODO : This makes the vessel take a turn in both directions, but we don't need the angle to be bigger than the relative bearing on both sides
+            # We need to allow the vessel smaller angles on the side where the other boat is not present
             if abs(u_candidate) > relative_bearing:  # Must turn starboard (right) or port (left), both are valid
                 return True  # No violation
         elif encounter_type in ["crossing-port", "overtaken", "none"]:
