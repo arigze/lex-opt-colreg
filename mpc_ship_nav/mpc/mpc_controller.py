@@ -130,6 +130,7 @@ class SimplifiedMPCController(Controller):
         self.u_candidates = self.control_sequences[:, 0]
         self.vis_scale = vis_scale  # for trajectory visualization
         self.active_encounters = {}  # {target_id: (encounter_type, timestamp)}
+        self.a_prev = np.zeros((100, self.cfg.horizon))
 
     def compute_control(
         self,
@@ -170,35 +171,45 @@ class SimplifiedMPCController(Controller):
         # 4) Precompute predicted dynamic trajectories (constant velocity)
         dyn_trajs = self._predict_dynamic(dyn_states)
 
-        # 5) Generate candidate yaw-rates and simulate own trajectories
-        # Paper: M candidate trajectories with yaw rates in [-max_yaw_rate, max_yaw_rate]
-        u_candidates = np.linspace(
-            -self.cfg.max_yaw_rate, self.cfg.max_yaw_rate, self.cfg.n_candidates
-        )
-        feasible_mask, own_trajs, own_trajs_vis = self._simulate_and_filter(
-            own, dyn_trajs, env
-        )
+        # 5) Set hyperparameters for MPPI
 
-        if not np.any(feasible_mask):
-            # fallback: choose u closest to 0 (maintain current heading as safest option)
-            # This matches the paper's approach when no feasible trajectory exists
-            idx = np.argmin(np.abs(u_candidates))
-            return ((float(u_candidates[idx]), idx), (feasible_mask, own_trajs_vis))
+        H = self.cfg.horizon
+        K = 1000 # TODO try more
+        lambd = 0.01 # TODO experiment with different values
+        sigma = self.cfg.max_yaw_rate / 2 # TODO experiment with lower values
+        rho = 0.8  # correlation coefficient, tune between 0.5–0.95
 
-        # 6) Calculate lambda-ladder
+        # 6) MPPI optimization loop
+
+        # Set a_bar
+        a_bar = np.zeros((K, H))  # nominal control (0 yaw rate)
+
+        # Sample control noise
+        noise = np.zeros((K, H))
+        noise[:, 0] = np.random.normal(0, sigma, size=K)
+        for h in range(1, H):
+            noise[:, h] = rho * noise[:, h-1] + np.sqrt(1 - rho**2) * np.random.normal(0, sigma, size=K)
+        
+        # Generate candidate control sequence
+        candidates = a_bar + noise
+
+        # Simulate trajectory with candidate control sequence
+        feasible_mask, own_trajs, own_trajs_vis = self._simulate_and_filter(own, dyn_trajs, env, candidates)
+
+        # Calculate costs
         collisions = self._is_colliding(feasible_mask)
-        print("Collis:", collisions)
-        colreg_violations = self._respects_colreg_rules(own_ship, other_vessels, u_candidates)
-        print("COLREG:", colreg_violations)
+        colreg_violations = self._respects_colreg_rules(own_ship, other_vessels, candidates[:, 0]) # TODO : Does this still work if the yaw rate changes?
         path_following_scores = self._path_following_scores((wp_x, wp_y), own_trajs)
         normalized_path_scores = self._normalize_scores(path_following_scores)
-        print("Path scores:", normalized_path_scores)
         lambda_ladder = self._lambda_ladder(collisions, colreg_violations, normalized_path_scores)
-        print("Lambda-ladder values:", lambda_ladder)
-        idx = np.argmin(lambda_ladder)
-        print(f"Selected trajectory index: {idx} and value: {lambda_ladder[idx]}")
 
-        return (float(u_candidates[idx]), idx), (feasible_mask, own_trajs_vis)
+        # Calculate weights
+        weights = np.exp(-lambda_ladder / lambd)
+        weights /= np.sum(weights)
+
+        # Return trajectory given by MPPI optimization
+        return (np.sum(weights * candidates[:, 0]), 22), (feasible_mask, own_trajs_vis)
+
 
     @staticmethod
     def _wrap_angle(a: float) -> float:
@@ -214,6 +225,7 @@ class SimplifiedMPCController(Controller):
         own: VesselState,
         dyn_trajs: List[np.ndarray],
         env: ChartEnvironment,
+        candidates: np.ndarray,  # shape (K, H)
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Simulate own-ship trajectories for each yaw-rate candidate and
@@ -224,40 +236,39 @@ class SimplifiedMPCController(Controller):
         H = self.cfg.horizon
         dt = self.cfg.dt
         v = own.v
-        M = self.cfg.n_candidates
+        K = candidates.shape[0]
         
-        sequence_by_traj = self.control_sequences 
-        own_trajs_vis = np.zeros((M, H, 2), dtype=float)
-        own_trajs = np.zeros((M, H, 2), dtype=float)
-        feasible = np.ones(M, dtype=bool)
+        own_trajs_vis = np.zeros((K, H, 2), dtype=float)
+        own_trajs = np.zeros((K, H, 2), dtype=float)
+        feasible = np.ones(K, dtype=bool)
 
-        for m in range(M):
+        for k in range(K):
             px = own.x
             py = own.y
             psi = own.psi
             px_vis = own.x
             py_vis = own.y
             psi_vis = own.psi
-            sequence = sequence_by_traj[m]
+            sequence = candidates[k]
             for h in range(H):
                 u = sequence[h]
                 psi_vis = self._wrap_angle(psi_vis + u * dt)
                 px_vis += v * math.cos(psi_vis) * dt * self.vis_scale
                 py_vis += v * math.sin(psi_vis) * dt * self.vis_scale
-                own_trajs_vis[m, h, 0] = px_vis
-                own_trajs_vis[m, h, 1] = py_vis
+                own_trajs_vis[k, h, 0] = px_vis
+                own_trajs_vis[k, h, 1] = py_vis
                 
             for h in range(H):
                 u = sequence[h]
                 psi = self._wrap_angle(psi + u * dt)
                 px += v * math.cos(psi) * dt
                 py += v * math.sin(psi) * dt
-                own_trajs[m, h, 0] = px
-                own_trajs[m, h, 1] = py
+                own_trajs[k, h, 0] = px
+                own_trajs[k, h, 1] = py
 
                 # --- static obstacle check (land) ---
                 if not env.is_navigable(px, py):
-                    feasible[m] = False
+                    feasible[k] = False
                     break
 
                 # --- dynamic collision check ---
@@ -267,10 +278,10 @@ class SimplifiedMPCController(Controller):
                     ox, oy = traj_other[h]
                     dist = math.hypot(px - ox, py - oy)
                     if dist < self.cfg.collision_radius:
-                        feasible[m] = False
+                        feasible[k] = False
                         break
 
-                if not feasible[m]:
+                if not feasible[k]:
                     break
 
         return feasible, own_trajs, own_trajs_vis
@@ -399,12 +410,6 @@ class SimplifiedMPCController(Controller):
 
                     # Check violation
                     violations[m] = 0 if self._compute_control(encounter, relative_bearing, u_candidates[m]) else 1
-
-                    # TODO : Do we need this patch?
-                    # Special case: crossing-starboard allows the smallest candidate to be compliant in case target is too far starboard
-                    # This allows to turn starboard (right) even if the relative_bearing is too small
-                    if encounter == "crossing-starboard" and m == 0:
-                        violations[m] = 0  # No violation for first candidate in crossing-starboard
 
             if not has_nearby_vessels:
                 violations[m] = 0  # No violations if no vessels in COLREG radius
