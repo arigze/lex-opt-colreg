@@ -182,3 +182,5 @@ cython_debug/
 
 # Mac
 .DS_Store
+examples/.DS_Store
+examples/sim/.DS_Store

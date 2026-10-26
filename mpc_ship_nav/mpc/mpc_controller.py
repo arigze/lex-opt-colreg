@@ -22,6 +22,11 @@ class MPCConfig:
     collision_radius_nm: float = 0.5   # d_collision
     colreg_radius_nm: float = 3.0      # d_COLREG
 
+    # MPPI hyperparameters (all have original hardcoded values as defaults)
+    sigma: float = None   # control noise std dev; defaults to max_yaw_rate/2
+    rho: float = 0.8      # AR(1) correlation coefficient for coloured noise
+    lambd: float = 0.01   # temperature for MPPI weight softmax
+
     @property
     def max_delta_heading(self) -> float:
         """Maximum heading increment per step [rad]."""
@@ -120,8 +125,16 @@ class SimplifiedMPCController(Controller):
     - Apply only first control input (receding horizon).
     """
 
-    def __init__(self, dt: float, waypoints_xy: np.ndarray, vis_scale: int = 100) -> None:
-        self.cfg = MPCConfig(dt=dt)
+    def __init__(
+        self,
+        dt: float,
+        waypoints_xy: np.ndarray,
+        vis_scale: int = 100,
+        sigma: float = None,
+        rho: float = 0.8,
+        lambd: float = 0.01,
+    ) -> None:
+        self.cfg = MPCConfig(dt=dt, sigma=sigma, rho=rho, lambd=lambd)
         self.route = WaypointRoute(
             waypoints_xy=np.asarray(waypoints_xy, dtype=float),
             transition_radius=self.cfg.collision_radius,
@@ -131,6 +144,7 @@ class SimplifiedMPCController(Controller):
         self.vis_scale = vis_scale  # for trajectory visualization
         self.active_encounters = {}  # {target_id: (encounter_type, timestamp)}
         self.a_prev = np.zeros((100, self.cfg.horizon))
+        self.cost_log: List[float] = []  # realized lambda-ladder cost per step
 
     def compute_control(
         self,
@@ -175,9 +189,9 @@ class SimplifiedMPCController(Controller):
 
         H = self.cfg.horizon
         K = 1000 # TODO try more
-        lambd = 0.01 # TODO experiment with different values
-        sigma = self.cfg.max_yaw_rate / 2 # TODO experiment with lower values
-        rho = 0.8  # correlation coefficient, tune between 0.5–0.95
+        lambd = self.cfg.lambd
+        sigma = self.cfg.sigma if self.cfg.sigma is not None else self.cfg.max_yaw_rate / 2
+        rho = self.cfg.rho
 
         # 6) MPPI optimization loop
 
@@ -206,6 +220,9 @@ class SimplifiedMPCController(Controller):
         # Calculate weights
         weights = np.exp(-lambda_ladder / lambd)
         weights /= np.sum(weights)
+
+        # Log the weighted realized lambda-ladder cost for this step
+        self.cost_log.append(float(np.dot(weights, lambda_ladder)))
 
         # Return trajectory given by MPPI optimization
         return (np.sum(weights * candidates[:, 0]), 22), (feasible_mask, own_trajs_vis)
